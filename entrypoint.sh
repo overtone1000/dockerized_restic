@@ -32,8 +32,10 @@ else
 fi
 
 health() {
-    if [ -v "$1" ] #-v checks if $1 is set
+    if [ -z $BACKUP_HEALTH_URL ] #-z checks if BACKUP_HEALTH_URL is unset
     then
+        echo "Health URL is not set. Environment variable is $BACKUP_HEALTH_URL"
+    else
         wget -nv "$1" -T 10 -t 5 -O /dev/null
     fi
 }
@@ -59,19 +61,27 @@ snapshots() {
 }
 
 backup() {
-    health $BACKUP_HEALTH_URL/start
     #Set host to allow finding the correct parent snapshot even after the container name changes
     restic --repo $REPO_LOCATION --password-command "echo $RESTIC_PASSWORD" --host "containerized_restic" backup $DATA_LOCATION
-    RESULT=$?
-    if [ RESULT = 0 ]
+    return $?
+}
+
+forget_prune() {
+    #Decided to omit host flag here. If any errant snapshots are around, they'll eventually get cleaned up better this way.
+    restic --repo $REPO_LOCATION --password-command "echo $RESTIC_PASSWORD"  forget --prune $PRUNE_CONFIG
+    return $?
+}
+
+backup_forget_prune_health() {
+    health $BACKUP_HEALTH_URL/start
+    if backup
     then
-        restic --repo $REPO_LOCATION --password-command "echo $RESTIC_PASSWORD" forget --prune \
-            --keep-last 10 \
-            --keep-daily 10 \
-            --keep-weekly 12 \
-            --keep-monthly 6 \
-            --keep-yearls 1 \
-        health $BACKUP_HEALTH_URL
+        if forget_prune
+        then
+            health $BACKUP_HEALTH_URL
+        else
+            health $BACKUP_HEALTH_URL/fail/$RESULT
+        fi
     else
         health $BACKUP_HEALTH_URL/fail/$RESULT
     fi
@@ -122,7 +132,7 @@ then
     while true; do sleep 86400; done
 elif [ "$EXECUTION_MODE" = "oneshot" ]
 then
-    if backup
+    if backup_forget_prune_health
     then
         echo "Successful backup."
     else
@@ -130,7 +140,7 @@ then
         if unlock_then_check
         then
             echo "Retrying backup."
-            backup
+            backup_forget_prune_health
         fi            
     fi
 elif [ "$EXECUTION_MODE" = "looping" ]
@@ -152,7 +162,7 @@ then
             UNLOCK_AND_CHECK=false
         fi
 
-        if backup
+        if backup_forget_prune_health
         then
             echo "Successful backup."
         else
